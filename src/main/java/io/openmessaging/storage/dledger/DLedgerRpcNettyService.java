@@ -52,6 +52,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * DLedger RPC 服务的 Netty 实现，实现了 DLedger 的请求发送和请求处理。它把请求处理逻辑转发给 {@link DLedgerServer} 去处理。
+ *
  * A netty implementation of DLedgerRpcService. It should be bi-directional, which means it implements both
  * DLedgerProtocol and DLedgerProtocolHandler.
  */
@@ -71,6 +73,9 @@ public class DLedgerRpcNettyService extends DLedgerRpcService {
 
     private ExecutorService voteInvokeExecutor = Executors.newCachedThreadPool(new NamedThreadFactory("voteInvokeExecutor"));
 
+    /**
+     * 心跳发送线程池
+     */
     private ExecutorService heartBeatInvokeExecutor = Executors.newCachedThreadPool(new NamedThreadFactory("heartBeatInvokeExecutor"));
 
     public DLedgerRpcNettyService(DLedgerServer dLedgerServer) {

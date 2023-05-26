@@ -26,15 +26,27 @@ public class DLedgerConfig {
     public static final String FILE = "FILE";
     public static final String MULTI_PATH_SPLITTER = System.getProperty("dLedger.multiPath.Splitter", ",");
 
+    /**
+     * DLedger Group 名称
+     */
     @Parameter(names = {"--group", "-g"}, description = "Group of this server")
     private String group = "default";
 
+    /**
+     * DLedger 节点 ID，默认为 n0
+     */
     @Parameter(names = {"--id", "-i"}, description = "Self id of this server")
     private String selfId = "n0";
 
+    /**
+     * DLedger Group 中所有节点信息，多个信息分号隔开
+     */
     @Parameter(names = {"--peers", "-p"}, description = "Peer info of this server")
     private String peers = "n0-localhost:20911";
 
+    /**
+     * DLedger 日志文件根目录
+     */
     @Parameter(names = {"--store-base-dir", "-s"}, description = "The base store dir of this server")
     private String storeBaseDir = File.separator + "tmp" + File.separator + "dledgerstore";
 
@@ -47,6 +59,9 @@ public class DLedgerConfig {
     @Parameter(names = {"--peer-push-quotas"}, description = "The quotas of the pusher")
     private int peerPushQuota = 20 * 1024 * 1024;
 
+    /**
+     * DLedger 存储类型，支持文件和内存
+     */
     private String storeType = FILE; //FILE, MEMORY
     private String dataStorePath;
 
@@ -65,18 +80,30 @@ public class DLedgerConfig {
     private int minVoteIntervalMs = 300;
     private int maxVoteIntervalMs = 1000;
 
+    /**
+     * DLedger 日志文件保留时长，默认 72h
+     */
     private int fileReservedHours = 72;
+    /**
+     * DLedger 日志文件过期删除时间，默认凌晨 4 点
+     */
     private String deleteWhen = "04";
 
     private float diskSpaceRatioToCheckExpired = Float.parseFloat(System.getProperty("dledger.disk.ratio.check", "0.70"));
     private float diskSpaceRatioToForceClean = Float.parseFloat(System.getProperty("dledger.disk.ratio.clean", "0.85"));
 
+    /**
+     * 是否强制删除文件
+     */
     private boolean enableDiskForceClean = true;
 
     private long flushFileInterval = 10;
 
     private long checkPointInterval = 3000;
 
+    /**
+     * DLedger 单个日志文件大小
+     */
     private int mappedFileSizeForEntryData = 1024 * 1024 * 1024;
     private int mappedFileSizeForEntryIndex = DLedgerMmapFileStore.INDEX_UNIT_SIZE * 5 * 1024 * 1024;
 

@@ -16,13 +16,28 @@
 
 package io.openmessaging.storage.dledger.utils;
 
+/**
+ * 主从日志复制流控类
+ */
 public class Quota {
 
+    /**
+     * 每秒最大追加日志速度，默认 20 MB
+     */
     private final int max;
 
+    /**
+     * 采样值
+     */
     private final int[] samples;
+    /**
+     * 每个采样值对应的时间
+     */
     private final long[] timeVec;
 
+    /**
+     * 时间窗口大小，每秒一个窗口
+     */
     private final int window;
 
     public Quota(int max) {
@@ -38,6 +53,12 @@ public class Quota {
         this.timeVec = new long[window];
     }
 
+    /**
+     * 基于当前时间戳，计算在 window 中的索引
+     *
+     * @param currTimeMs
+     * @return
+     */
     private int index(long currTimeMs) {
         return  (int) (second(currTimeMs) % window);
     }
@@ -46,6 +67,11 @@ public class Quota {
         return currTimeMs / 1000;
     }
 
+    /**
+     * 统计当前速率
+     *
+     * @param value 当前速率
+     */
     public void sample(int value) {
         long timeMs = System.currentTimeMillis();
         int index = index(timeMs);
@@ -59,6 +85,11 @@ public class Quota {
 
     }
 
+    /**
+     * 验证当前秒的采样值是否超过阈值
+     *
+     * @return
+     */
     public boolean validateNow() {
         long timeMs = System.currentTimeMillis();
         int index = index(timeMs);
@@ -69,6 +100,11 @@ public class Quota {
         return false;
     }
 
+    /**
+     * 当前秒的采样值如果已经超过阈值，返回当前秒剩下的时间
+     *
+     * @return 当前秒剩下的毫秒数
+     */
     public int leftNow() {
         long timeMs = System.currentTimeMillis();
         return (int) ((second(timeMs) + 1) * 1000 - timeMs);

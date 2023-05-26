@@ -16,22 +16,27 @@
 
 package io.openmessaging.storage.dledger;
 
-import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
-import io.openmessaging.storage.dledger.utils.IOUtils;
-import io.openmessaging.storage.dledger.utils.PreConditions;
+import static io.openmessaging.storage.dledger.MemberState.Role.CANDIDATE;
+import static io.openmessaging.storage.dledger.MemberState.Role.FOLLOWER;
+import static io.openmessaging.storage.dledger.MemberState.Role.LEADER;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import static io.openmessaging.storage.dledger.MemberState.Role.CANDIDATE;
-import static io.openmessaging.storage.dledger.MemberState.Role.FOLLOWER;
-import static io.openmessaging.storage.dledger.MemberState.Role.LEADER;
+import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
+import io.openmessaging.storage.dledger.utils.IOUtils;
+import io.openmessaging.storage.dledger.utils.PreConditions;
 
+/**
+ * Raft 节点状态机
+ */
 public class MemberState {
 
     public static final String TERM_PERSIST_FILE = "currterm";
@@ -45,12 +50,24 @@ public class MemberState {
     private final String peers;
     private volatile Role role = CANDIDATE;
     private volatile String leaderId;
+    /**
+     * Raft 节点当前任期
+     */
     private volatile long currTerm = 0;
     private volatile String currVoteFor;
+    /**
+     * 日志末尾索引号
+     */
     private volatile long ledgerEndIndex = -1;
+    /**
+     * 日志末尾任期
+     */
     private volatile long ledgerEndTerm = -1;
     private long knownMaxTermInGroup = -1;
-    private Map<String, String> peerMap = new HashMap<>();
+    /**
+     * 对端节点表
+     */
+    private Map<String /* 对端节点 ID */, String /* 对端节点地址 */> peerMap = new HashMap<>();
     private Map<String, Boolean> peersLiveTable = new ConcurrentHashMap<>();
 
     private volatile String transferee;
@@ -115,6 +132,10 @@ public class MemberState {
         persistTerm();
     }
 
+    /**
+     * 获取新一轮投票轮次
+     * @return
+     */
     public synchronized long nextTerm() {
         PreConditions.check(role == CANDIDATE, DLedgerResponseCode.ILLEGAL_MEMBER_STATE, "%s != %s", role, CANDIDATE);
         if (knownMaxTermInGroup > currTerm) {
@@ -127,6 +148,10 @@ public class MemberState {
         return currTerm;
     }
 
+    /**
+     * 更新状态机角色，并设置 leaderId 为当前节点 Id
+     * @param term
+     */
     public synchronized void changeToLeader(long term) {
         PreConditions.check(currTerm == term, DLedgerResponseCode.ILLEGAL_MEMBER_STATE, "%d != %d", currTerm, term);
         this.role = LEADER;
