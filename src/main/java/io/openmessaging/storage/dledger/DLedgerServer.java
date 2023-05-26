@@ -65,6 +65,9 @@ import org.apache.rocketmq.remoting.netty.NettyServerConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * DLedger 节点
+ */
 public class DLedgerServer implements DLedgerProtocolHandler {
 
     private static Logger logger = LoggerFactory.getLogger(DLedgerServer.class);

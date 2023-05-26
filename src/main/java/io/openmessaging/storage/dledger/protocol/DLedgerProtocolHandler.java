@@ -19,6 +19,7 @@ package io.openmessaging.storage.dledger.protocol;
 import java.util.concurrent.CompletableFuture;
 
 /**
+ * DLedger 请求处理器
  * Both the RaftLogServer(inbound) and RaftRpcService (outbound) should implement this protocol
  */
 public interface DLedgerProtocolHandler extends DLedgerClientProtocolHandler {

@@ -39,6 +39,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Raft Leader 选举类
+ */
 public class DLedgerLeaderElector {
 
     private static Logger logger = LoggerFactory.getLogger(DLedgerLeaderElector.class);
@@ -46,26 +49,65 @@ public class DLedgerLeaderElector {
     private Random random = new Random();
     private DLedgerConfig dLedgerConfig;
     private final MemberState memberState;
+    /**
+     * RPC 服务，向其他节点发送心跳，选举请求等
+     */
     private DLedgerRpcService dLedgerRpcService;
 
     //as a server handler
     //record the last leader state
+    /**
+     * 上次收到心跳包的时间戳
+     */
     private volatile long lastLeaderHeartBeatTime = -1;
+    /**
+     * 上次发送心跳包的时间戳
+     */
     private volatile long lastSendHeartBeatTime = -1;
+    /**
+     * 上次成狗收到心跳包的时间戳
+     */
     private volatile long lastSuccHeartBeatTime = -1;
+    /**
+     * 心跳周期
+     */
     private int heartBeatTimeIntervalMs = 2000;
+    /**
+     * 允许最多 N 个周期内没有收到心跳包，Follower 只有超过 N 个周期未收到心跳才会变为 Candidate，进行下一轮选举
+     */
     private int maxHeartBeatLeak = 3;
     //as a client
+    /**
+     * 发送下一个拉票请求的时间戳
+     */
     private long nextTimeToRequestVote = -1;
+    /**
+     * 是否立即开始新的投票轮次。true 则忽略计时器，立即发起新的投票轮次
+     */
     private volatile boolean needIncreaseTermImmediately = false;
+    /**
+     * 最小的发送投票间隔时间
+     */
     private int minVoteIntervalMs = 300;
+    /**
+     * 最大的发送投票间隔时间
+     */
     private int maxVoteIntervalMs = 1000;
 
+    /**
+     * 节点状态变更监听器
+     */
     private List<RoleChangeHandler> roleChangeHandlers = new ArrayList<>();
 
     private VoteResponse.ParseResult lastParseResult = VoteResponse.ParseResult.WAIT_TO_REVOTE;
+    /**
+     * 上次投票的开销
+     */
     private long lastVoteCost = 0L;
 
+    /**
+     * 状态机管理器
+     */
     private StateMaintainer stateMaintainer = new StateMaintainer("StateMaintainer", logger);
 
     private final TakeLeadershipTask takeLeadershipTask = new TakeLeadershipTask();
@@ -79,8 +121,10 @@ public class DLedgerLeaderElector {
     }
 
     public void startup() {
+        // 启动状态管理器
         stateMaintainer.start();
         for (RoleChangeHandler roleChangeHandler : roleChangeHandlers) {
+            // 启动角色转换监听器，监听状态机状态变更
             roleChangeHandler.startup();
         }
     }
@@ -321,6 +365,7 @@ public class DLedgerLeaderElector {
     }
 
     private void maintainAsLeader() throws Exception {
+        // 距离上次发送心跳超过 1 个心跳周期（2s），发送心跳请求
         if (DLedgerUtils.elapsed(lastSendHeartBeatTime) > heartBeatTimeIntervalMs) {
             long term;
             String leaderId;
@@ -331,15 +376,19 @@ public class DLedgerLeaderElector {
                 }
                 term = memberState.currTerm();
                 leaderId = memberState.getLeaderId();
+                // 记录本次发送心跳时间戳
                 lastSendHeartBeatTime = System.currentTimeMillis();
             }
+            // 向所有从节点发送心跳
             sendHeartbeats(term, leaderId);
         }
     }
 
     private void maintainAsFollower() {
+        // 距离上次收到心跳是否超过 2 个心跳周期。在不加锁的情况下判断，减少加锁次数
         if (DLedgerUtils.elapsed(lastLeaderHeartBeatTime) > 2 * heartBeatTimeIntervalMs) {
             synchronized (memberState) {
+                // 超过 maxHeartBeatLeak(3) 个心跳周期没有收到心跳包，则切换成 Candidate
                 if (memberState.isFollower() && (DLedgerUtils.elapsed(lastLeaderHeartBeatTime) > maxHeartBeatLeak * heartBeatTimeIntervalMs)) {
                     logger.info("[{}][HeartBeatTimeOut] lastLeaderHeartBeatTime: {} heartBeatTimeIntervalMs: {} lastLeader={}", memberState.getSelfId(), new Timestamp(lastLeaderHeartBeatTime), heartBeatTimeIntervalMs, memberState.getLeaderId());
                     changeRoleToCandidate(memberState.currTerm());
@@ -390,6 +439,7 @@ public class DLedgerLeaderElector {
 
     private void maintainAsCandidate() throws Exception {
         //for candidate
+        // 未到下一轮次，直接返回
         if (System.currentTimeMillis() < nextTimeToRequestVote && !needIncreaseTermImmediately) {
             return;
         }
@@ -531,6 +581,7 @@ public class DLedgerLeaderElector {
      * @throws Exception
      */
     private void maintainState() throws Exception {
+        // 按状态执行方法，
         if (memberState.isLeader()) {
             maintainAsLeader();
         } else if (memberState.isFollower()) {
@@ -687,6 +738,9 @@ public class DLedgerLeaderElector {
         void shutdown();
     }
 
+    /**
+     * 节点状态管理器，维护节点状态
+     */
     public class StateMaintainer extends ShutdownAbleThread {
 
         public StateMaintainer(String name, Logger logger) {
@@ -697,7 +751,9 @@ public class DLedgerLeaderElector {
         public void doWork() {
             try {
                 if (DLedgerLeaderElector.this.dLedgerConfig.isEnableLeaderElector()) {
+                    // 更新心跳相关配置
                     DLedgerLeaderElector.this.refreshIntervals(dLedgerConfig);
+                    // 驱动状态机，做状态转移
                     DLedgerLeaderElector.this.maintainState();
                 }
                 sleep(10);

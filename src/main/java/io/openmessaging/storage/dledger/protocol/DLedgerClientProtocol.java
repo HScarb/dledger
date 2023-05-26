@@ -19,14 +19,34 @@ package io.openmessaging.storage.dledger.protocol;
 import java.util.concurrent.CompletableFuture;
 
 /**
+ * DLedger 客户端向服务端 通信协议
  * Both the RaftLogServer(inbound) and RaftRpcService (outbound) should implement this protocol
  */
 public interface DLedgerClientProtocol {
 
+    /**
+     * 客户端从服务端获取日志条目
+     *
+     * @param request
+     * @return
+     * @throws Exception
+     */
     CompletableFuture<GetEntriesResponse> get(GetEntriesRequest request) throws Exception;
 
+    /**
+     * 客户端向服务端追加日志
+     * @param request
+     * @return
+     * @throws Exception
+     */
     CompletableFuture<AppendEntryResponse> append(AppendEntryRequest request) throws Exception;
 
+    /**
+     * 获取元数据
+     * @param request
+     * @return
+     * @throws Exception
+     */
     CompletableFuture<MetadataResponse> metadata(MetadataRequest request) throws Exception;
 
     CompletableFuture<LeadershipTransferResponse> leadershipTransfer(LeadershipTransferRequest request) throws Exception;
