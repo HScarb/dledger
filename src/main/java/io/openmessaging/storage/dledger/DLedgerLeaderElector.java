@@ -147,6 +147,13 @@ public class DLedgerLeaderElector {
         this.maxVoteIntervalMs = dLedgerConfig.getMaxVoteIntervalMs();
     }
 
+    /**
+     * Follower 收到 Leader 心跳请求，响应
+     *
+     * @param request
+     * @return
+     * @throws Exception
+     */
     public CompletableFuture<HeartBeatResponse> handleHeartBeat(HeartBeatRequest request) throws Exception {
 
         if (!memberState.isPeerMember(request.getLeaderId())) {
@@ -160,32 +167,42 @@ public class DLedgerLeaderElector {
         }
 
         if (request.getTerm() < memberState.currTerm()) {
+            // Leader 节点轮次小于 Follower，返回 EXPIRED_TERM，告诉对方轮次已经过期，需要重新选举
             return CompletableFuture.completedFuture(new HeartBeatResponse().term(memberState.currTerm()).code(DLedgerResponseCode.EXPIRED_TERM.getCode()));
         } else if (request.getTerm() == memberState.currTerm()) {
+            // 轮次相同，判断请求的节点是否是当前的 Leader
             if (request.getLeaderId().equals(memberState.getLeaderId())) {
+                // 如果请求的节点是当前的 Leader，更新上次收到 Leader 心跳的时间戳，返回成功
                 lastLeaderHeartBeatTime = System.currentTimeMillis();
                 return CompletableFuture.completedFuture(new HeartBeatResponse());
             }
         }
 
+        // 处理异常情况，通常情况下上面已经返回。需要加锁以保证线程安全
         //abnormal case
         //hold the lock to get the latest term and leaderId
         synchronized (memberState) {
             if (request.getTerm() < memberState.currTerm()) {
+                // Leader 节点轮次小于 Follower，返回 EXPIRED_TERM，告诉对方轮次已经过期，需要重新选举
                 return CompletableFuture.completedFuture(new HeartBeatResponse().term(memberState.currTerm()).code(DLedgerResponseCode.EXPIRED_TERM.getCode()));
             } else if (request.getTerm() == memberState.currTerm()) {
+                // 轮次相同，判断请求的节点是否是当前的 Leader
                 if (memberState.getLeaderId() == null) {
+                    // 如果当前节点还没有 Leader，切换角色成为 Follower，设置 Leader 节点 Id，返回成功
                     changeRoleToFollower(request.getTerm(), request.getLeaderId());
                     return CompletableFuture.completedFuture(new HeartBeatResponse());
                 } else if (request.getLeaderId().equals(memberState.getLeaderId())) {
+                    // 如果请求的节点是当前的 Leader，更新上次收到 Leader 心跳的时间戳，返回成功
                     lastLeaderHeartBeatTime = System.currentTimeMillis();
                     return CompletableFuture.completedFuture(new HeartBeatResponse());
                 } else {
+                    // 如果请求的节点不是当前的 Leader，返回 INCONSISTENT_LEADER，告诉对方 Leader 节点不一致，对方会切换成 Candidate，重新选举
                     //this should not happen, but if happened
                     logger.error("[{}][BUG] currTerm {} has leader {}, but received leader {}", memberState.getSelfId(), memberState.currTerm(), memberState.getLeaderId(), request.getLeaderId());
                     return CompletableFuture.completedFuture(new HeartBeatResponse().code(DLedgerResponseCode.INCONSISTENT_LEADER.getCode()));
                 }
             } else {
+                // 如果请求的轮次大于当前轮次，认为本节点未准备好，进入 Candidate 状态，立即发起一轮投票，返回 TERM_NOT_READY
                 //To make it simple, for larger term, do not change to follower immediately
                 //first change to candidate, and notify the state-maintainer thread
                 changeRoleToCandidate(request.getTerm());
@@ -304,41 +321,63 @@ public class DLedgerLeaderElector {
         }
     }
 
+    /**
+     * Leader 节点向 Follower 节点发送心跳包
+     *
+     * @param term
+     * @param leaderId
+     * @throws Exception
+     */
     private void sendHeartbeats(long term, String leaderId) throws Exception {
+        // 集群内节点个数
         final AtomicInteger allNum = new AtomicInteger(1);
+        // 收到成功响应的节点个数
         final AtomicInteger succNum = new AtomicInteger(1);
+        // 收到对端未准备好的响应的节点个数
         final AtomicInteger notReadyNum = new AtomicInteger(0);
+        // 当前集群节点维护的最大投票轮次
         final AtomicLong maxTerm = new AtomicLong(-1);
+        // 是否存在 Leader 节点不一致
         final AtomicBoolean inconsistLeader = new AtomicBoolean(false);
+        // latch，用于等待异步请求结果
         final CountDownLatch beatLatch = new CountDownLatch(1);
+        // 本次心跳包开始发送的时间戳
         long startHeartbeatTimeMs = System.currentTimeMillis();
+        // 遍历集群中所有节点，异步发送心跳
         for (String id : memberState.getPeerMap().keySet()) {
             if (memberState.getSelfId().equals(id)) {
                 continue;
             }
+            // 构造心跳包
             HeartBeatRequest heartBeatRequest = new HeartBeatRequest();
             heartBeatRequest.setGroup(memberState.getGroup());
             heartBeatRequest.setLocalId(memberState.getSelfId());
             heartBeatRequest.setRemoteId(id);
             heartBeatRequest.setLeaderId(leaderId);
             heartBeatRequest.setTerm(term);
+            // 异步发送心跳
             CompletableFuture<HeartBeatResponse> future = dLedgerRpcService.heartBeat(heartBeatRequest);
             future.whenComplete((HeartBeatResponse x, Throwable ex) -> {
+                // 心跳响应回调，统计响应结果
                 try {
                     if (ex != null) {
                         memberState.getPeersLiveTable().put(id, Boolean.FALSE);
                         throw ex;
                     }
                     switch (DLedgerResponseCode.valueOf(x.getCode())) {
+                        // 成功响应
                         case SUCCESS:
                             succNum.incrementAndGet();
                             break;
+                        // Leader 节点投票轮次小于 Follower 节点
                         case EXPIRED_TERM:
                             maxTerm.set(x.getTerm());
                             break;
+                        // Follower 节点已经有新的 Leader
                         case INCONSISTENT_LEADER:
                             inconsistLeader.compareAndSet(false, true);
                             break;
+                        // Follower 未准备好
                         case TERM_NOT_READY:
                             notReadyNum.incrementAndGet();
                             break;
@@ -351,6 +390,7 @@ public class DLedgerLeaderElector {
                     else
                         memberState.getPeersLiveTable().put(id, Boolean.TRUE);
 
+                    // 成功响应的 Follower 节点超过半数，唤醒心跳线程
                     if (memberState.isQuorum(succNum.get())
                         || memberState.isQuorum(succNum.get() + notReadyNum.get())) {
                         beatLatch.countDown();
@@ -359,25 +399,33 @@ public class DLedgerLeaderElector {
                     logger.error("heartbeat response failed", t);
                 } finally {
                     allNum.incrementAndGet();
+                    // 所有 Follower 都响应（但成功的没有超过半数），也唤醒心跳线程
                     if (allNum.get() == memberState.peerSize()) {
                         beatLatch.countDown();
                     }
                 }
             });
         }
+        // 等待心跳结果，超过半数成功则继续
         beatLatch.await(heartBeatTimeIntervalMs, TimeUnit.MILLISECONDS);
+        // 仲裁心跳响应结果
         if (memberState.isQuorum(succNum.get())) {
+            // 半数以上 Follower 节点成功响应，更新上次成功心跳时间戳
             lastSuccHeartBeatTime = System.currentTimeMillis();
         } else {
             logger.info("[{}] Parse heartbeat responses in cost={} term={} allNum={} succNum={} notReadyNum={} inconsistLeader={} maxTerm={} peerSize={} lastSuccHeartBeatTime={}",
                 memberState.getSelfId(), DLedgerUtils.elapsed(startHeartbeatTimeMs), term, allNum.get(), succNum.get(), notReadyNum.get(), inconsistLeader.get(), maxTerm.get(), memberState.peerSize(), new Timestamp(lastSuccHeartBeatTime));
             if (memberState.isQuorum(succNum.get() + notReadyNum.get())) {
+                // （成功 + 未准备）超过半数，立即发送下一次心跳
                 lastSendHeartBeatTime = -1;
             } else if (maxTerm.get() > term) {
+                // Follower 投票轮次比 Leader 大，Leader 切换成 Candidate 并使用从节点的轮次
                 changeRoleToCandidate(maxTerm.get());
             } else if (inconsistLeader.get()) {
+                // Follower 有其他 Leader，该 Leader 节点切换成 Candidate
                 changeRoleToCandidate(term);
             } else if (DLedgerUtils.elapsed(lastSuccHeartBeatTime) > maxHeartBeatLeak * heartBeatTimeIntervalMs) {
+                // 超过 maxHeartBeatLeak 个心跳周期（6s）没有收到心跳包，切换成 Candidate
                 changeRoleToCandidate(term);
             }
         }

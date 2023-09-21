@@ -71,6 +71,9 @@ public class DLedgerRpcNettyService extends DLedgerRpcService {
 
     private ExecutorService voteInvokeExecutor = Executors.newCachedThreadPool(new NamedThreadFactory("voteInvokeExecutor"));
 
+    /**
+     * 心跳发送线程池
+     */
     private ExecutorService heartBeatInvokeExecutor = Executors.newCachedThreadPool(new NamedThreadFactory("heartBeatInvokeExecutor"));
 
     public DLedgerRpcNettyService(DLedgerServer dLedgerServer) {
