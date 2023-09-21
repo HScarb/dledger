@@ -65,7 +65,7 @@ public class DLedgerLeaderElector {
      */
     private volatile long lastSendHeartBeatTime = -1;
     /**
-     * 上次成狗收到心跳包的时间戳
+     * 上次成功收到心跳包的时间戳
      */
     private volatile long lastSuccHeartBeatTime = -1;
     /**
@@ -82,7 +82,8 @@ public class DLedgerLeaderElector {
      */
     private long nextTimeToRequestVote = -1;
     /**
-     * 是否立即开始新的投票轮次。true 则忽略计时器，立即发起新的投票轮次
+     * 是否立即开始新的投票轮次。true 则忽略计时器，立即发起新的投票轮次。<br/>
+     * 作用是在 Follower 收到 Leader 心跳，并且 Follower 轮次大于 Leader 轮次时，立即发起新的投票请求。
      */
     private volatile boolean needIncreaseTermImmediately = false;
     /**
@@ -99,6 +100,9 @@ public class DLedgerLeaderElector {
      */
     private List<RoleChangeHandler> roleChangeHandlers = new ArrayList<>();
 
+    /**
+     * 上一次投票结果
+     */
     private VoteResponse.ParseResult lastParseResult = VoteResponse.ParseResult.WAIT_TO_REVOTE;
     /**
      * 上次投票的开销
@@ -192,11 +196,17 @@ public class DLedgerLeaderElector {
         }
     }
 
+    /**
+     * 切换角色成为 Leader，Candidate 状态调用
+     * @param term
+     */
     public void changeRoleToLeader(long term) {
         synchronized (memberState) {
             if (memberState.currTerm() == term) {
+                // 修改状态机角色
                 memberState.changeToLeader(term);
                 lastSendHeartBeatTime = -1;
+                // 触发状态转换事件，执行扩展点逻辑代码
                 handleRoleChange(term, MemberState.Role.LEADER);
                 logger.info("[{}] [ChangeRoleToLeader] from term: {} and currTerm: {}", memberState.getSelfId(), term, memberState.currTerm());
             } else {
@@ -232,7 +242,15 @@ public class DLedgerLeaderElector {
         handleRoleChange(term, MemberState.Role.FOLLOWER);
     }
 
+    /**
+     * 处理收到的拉票请求
+     *
+     * @param request 拉票请求
+     * @param self 是否自身发送的投票请求
+     * @return
+     */
     public CompletableFuture<VoteResponse> handleVote(VoteRequest request, boolean self) {
+        // 由于一个节点可能同时收到多个节点的拉票请求，所以需要加锁。锁定状态机对象。
         //hold the lock to get the latest term, leaderId, ledgerEndIndex
         synchronized (memberState) {
             if (!memberState.isPeerMember(request.getLeaderId())) {
@@ -251,6 +269,7 @@ public class DLedgerLeaderElector {
             }
 
             if (request.getTerm() < memberState.currTerm()) {
+                // 拉票请求的 term 小于当前 term，拒绝投票
                 return CompletableFuture.completedFuture(new VoteResponse(request).term(memberState.currTerm()).voteResult(VoteResponse.RESULT.REJECT_EXPIRED_VOTE_TERM));
             } else if (request.getTerm() == memberState.currTerm()) {
                 if (memberState.currVoteFor() == null) {
@@ -397,10 +416,21 @@ public class DLedgerLeaderElector {
         }
     }
 
+    /**
+     * 向其他节点发起投票请求（拉票），等待各个节点响应
+     *
+     * @param term 当前轮次
+     * @param ledgerEndTerm 最大投票轮次
+     * @param ledgerEndIndex 最大日志条目 index
+     * @return
+     * @throws Exception
+     */
     private List<CompletableFuture<VoteResponse>> voteForQuorumResponses(long term, long ledgerEndTerm,
         long ledgerEndIndex) throws Exception {
         List<CompletableFuture<VoteResponse>> responses = new ArrayList<>();
+        // 遍历集群内所有节点
         for (String id : memberState.getPeerMap().keySet()) {
+            // 构建投票请求
             VoteRequest voteRequest = new VoteRequest();
             voteRequest.setGroup(memberState.getGroup());
             voteRequest.setLedgerEndIndex(ledgerEndIndex);
@@ -410,8 +440,10 @@ public class DLedgerLeaderElector {
             voteRequest.setRemoteId(id);
             CompletableFuture<VoteResponse> voteResponse;
             if (memberState.getSelfId().equals(id)) {
+                // 投票给自己
                 voteResponse = handleVote(voteRequest, true);
             } else {
+                // 发送投票请求到其他节点
                 //async
                 voteResponse = dLedgerRpcService.vote(voteRequest);
             }
@@ -429,54 +461,81 @@ public class DLedgerLeaderElector {
         return false;
     }
 
+    /**
+     * 设置下一次拉票时间
+     * @return
+     */
     private long getNextTimeToRequestVote() {
         if (isTakingLeadership()) {
             return System.currentTimeMillis() + dLedgerConfig.getMinTakeLeadershipVoteIntervalMs() +
                 random.nextInt(dLedgerConfig.getMaxTakeLeadershipVoteIntervalMs() - dLedgerConfig.getMinTakeLeadershipVoteIntervalMs());
         }
+        // 300 + [0, 700) ms
         return System.currentTimeMillis() + minVoteIntervalMs + random.nextInt(maxVoteIntervalMs - minVoteIntervalMs);
     }
 
+    /**
+     * 节点状态为 Candidate 时执行
+     * @throws Exception
+     */
     private void maintainAsCandidate() throws Exception {
         //for candidate
-        // 未到下一轮次，直接返回
+        // 未到下一拉票轮次，直接返回
         if (System.currentTimeMillis() < nextTimeToRequestVote && !needIncreaseTermImmediately) {
             return;
         }
+        // 投票轮次
         long term;
+        // Leader 当前的投票轮次
         long ledgerEndTerm;
+        // 当前 Log 最大 index，即下一条 Log 的起始 index
         long ledgerEndIndex;
         synchronized (memberState) {
             if (!memberState.isCandidate()) {
                 return;
             }
+            // 如果上一次投票结果是等待下一轮投票，或应立即发起投票
             if (lastParseResult == VoteResponse.ParseResult.WAIT_TO_VOTE_NEXT || needIncreaseTermImmediately) {
+                // 获取新投票轮次，准备发起新一轮投票
                 long prevTerm = memberState.currTerm();
                 term = memberState.nextTerm();
                 logger.info("{}_[INCREASE_TERM] from {} to {}", memberState.getSelfId(), prevTerm, term);
                 lastParseResult = VoteResponse.ParseResult.WAIT_TO_REVOTE;
             } else {
+                // 维持当前投票轮次
                 term = memberState.currTerm();
             }
             ledgerEndIndex = memberState.getLedgerEndIndex();
             ledgerEndTerm = memberState.getLedgerEndTerm();
         }
+        // 如果需要立即发起拉票
         if (needIncreaseTermImmediately) {
+            // 设置下一次拉票时间
             nextTimeToRequestVote = getNextTimeToRequestVote();
+            // 设置该标志位为 false
             needIncreaseTermImmediately = false;
             return;
         }
 
+        // 向其他节点发起拉票请求
         long startVoteTimeMs = System.currentTimeMillis();
         final List<CompletableFuture<VoteResponse>> quorumVoteResponses = voteForQuorumResponses(term, ledgerEndTerm, ledgerEndIndex);
+        // 已知的最大投票轮次
         final AtomicLong knownMaxTermInGroup = new AtomicLong(term);
+        // 所有投票数
         final AtomicInteger allNum = new AtomicInteger(0);
+        // 有效投票数
         final AtomicInteger validNum = new AtomicInteger(0);
+        // 赞成投票数
         final AtomicInteger acceptedNum = new AtomicInteger(0);
+        // 未准备好投票。如果对端节点的投票轮次小于发起投票的轮次，则认为我对端未准备好，对端节点会用本节点的轮次进入 Candidate 状态
         final AtomicInteger notReadyTermNum = new AtomicInteger(0);
+        // 发起投票节点的投票轮次小于对端节点的个数
         final AtomicInteger biggerLedgerNum = new AtomicInteger(0);
+        // 是否已经存在 Leader
         final AtomicBoolean alreadyHasLeader = new AtomicBoolean(false);
 
+        // 等待所有响应结果
         CountDownLatch voteLatch = new CountDownLatch(1);
         for (CompletableFuture<VoteResponse> future : quorumVoteResponses) {
             future.whenComplete((VoteResponse x, Throwable ex) -> {
@@ -486,30 +545,39 @@ public class DLedgerLeaderElector {
                     }
                     logger.info("[{}][GetVoteResponse] {}", memberState.getSelfId(), JSON.toJSONString(x));
                     if (x.getVoteResult() != VoteResponse.RESULT.UNKNOWN) {
+                        // 有效票 + 1
                         validNum.incrementAndGet();
                     }
+                    // 统计投票结果
                     synchronized (knownMaxTermInGroup) {
                         switch (x.getVoteResult()) {
                             case ACCEPT:
+                                // 赞成票 + 1
                                 acceptedNum.incrementAndGet();
                                 break;
                             case REJECT_ALREADY_VOTED:
+                                // 拒绝，已经投给其他节点
                             case REJECT_TAKING_LEADERSHIP:
                                 break;
                             case REJECT_ALREADY_HAS_LEADER:
+                                // 拒绝，已经存在 Leader 节点
                                 alreadyHasLeader.compareAndSet(false, true);
                                 break;
                             case REJECT_TERM_SMALL_THAN_LEDGER:
                             case REJECT_EXPIRED_VOTE_TERM:
+                                // 拒绝，当前投票轮次小于 Leader，更新自身投票轮次
                                 if (x.getTerm() > knownMaxTermInGroup.get()) {
                                     knownMaxTermInGroup.set(x.getTerm());
                                 }
                                 break;
                             case REJECT_EXPIRED_LEDGER_TERM:
+                                // 拒绝，当前 ledgerTerm 小于对端 ledgerTerm
                             case REJECT_SMALL_LEDGER_END_INDEX:
+                                // 拒绝，当前 ledgerEndIndex 小于对端 ledgerEndIndex
                                 biggerLedgerNum.incrementAndGet();
                                 break;
                             case REJECT_TERM_NOT_READY:
+                                // 拒绝，对端投票轮次小于当前轮次，即对端未准备好。此时对端节点使用当前投票轮次进入 Candidate 状态
                                 notReadyTermNum.incrementAndGet();
                                 break;
                             default:
@@ -517,6 +585,7 @@ public class DLedgerLeaderElector {
 
                         }
                     }
+                    // 已经有 Leader / 收到过半赞成，结束等待
                     if (alreadyHasLeader.get()
                         || memberState.isQuorum(acceptedNum.get())
                         || memberState.isQuorum(acceptedNum.get() + notReadyTermNum.get())) {
@@ -525,6 +594,7 @@ public class DLedgerLeaderElector {
                 } catch (Throwable t) {
                     logger.error("vote response failed", t);
                 } finally {
+                    // 如果所有对端节点都返回响应，结束等待
                     allNum.incrementAndGet();
                     if (allNum.get() == memberState.peerSize()) {
                         voteLatch.countDown();
@@ -534,6 +604,7 @@ public class DLedgerLeaderElector {
 
         }
 
+        // 同步等待所有节点响应
         try {
             voteLatch.await(2000 + random.nextInt(maxVoteIntervalMs), TimeUnit.MILLISECONDS);
         } catch (Throwable ignore) {
@@ -542,24 +613,32 @@ public class DLedgerLeaderElector {
 
         lastVoteCost = DLedgerUtils.elapsed(startVoteTimeMs);
         VoteResponse.ParseResult parseResult;
+        // 根据投票结果进行仲裁，驱动状态机
         if (knownMaxTermInGroup.get() > term) {
+            // 对端 term 大于自身 term，使用对端 term 进入 Candidate 状态
             parseResult = VoteResponse.ParseResult.WAIT_TO_VOTE_NEXT;
             nextTimeToRequestVote = getNextTimeToRequestVote();
             changeRoleToCandidate(knownMaxTermInGroup.get());
         } else if (alreadyHasLeader.get()) {
+            // 已有 Leader，保持 Candidate 状态，待收到 Leader 心跳请求后变为 Follower
             parseResult = VoteResponse.ParseResult.WAIT_TO_REVOTE;
+            // 重置下次拉票计时器，添加心跳最大超时时间。表示：等待在指定时间内收到 Leader 的心跳，降为 Follower。
             nextTimeToRequestVote = getNextTimeToRequestVote() + heartBeatTimeIntervalMs * maxHeartBeatLeak;
         } else if (!memberState.isQuorum(validNum.get())) {
+            // 有效票未超过半数，重置下次拉票计时器，等待重新投票。不增加投票轮次
             parseResult = VoteResponse.ParseResult.WAIT_TO_REVOTE;
             nextTimeToRequestVote = getNextTimeToRequestVote();
         } else if (!memberState.isQuorum(validNum.get() - biggerLedgerNum.get())) {
             parseResult = VoteResponse.ParseResult.WAIT_TO_REVOTE;
             nextTimeToRequestVote = getNextTimeToRequestVote() + maxVoteIntervalMs;
         } else if (memberState.isQuorum(acceptedNum.get())) {
+            // 有效票超过半数，成为 Leader 节点
             parseResult = VoteResponse.ParseResult.PASSED;
         } else if (memberState.isQuorum(acceptedNum.get() + notReadyTermNum.get())) {
+            // 有效票 + 未准备好投票 超过半数，立即重新拉票
             parseResult = VoteResponse.ParseResult.REVOTE_IMMEDIATELY;
         } else {
+            // 赞成票 + 对端 ledgerEndIndex 超过半数，重置计时器，继续本轮选举
             parseResult = VoteResponse.ParseResult.WAIT_TO_VOTE_NEXT;
             nextTimeToRequestVote = getNextTimeToRequestVote();
         }
@@ -568,6 +647,7 @@ public class DLedgerLeaderElector {
             memberState.getSelfId(), lastVoteCost, term, memberState.peerSize(), allNum, acceptedNum, notReadyTermNum, biggerLedgerNum, alreadyHasLeader, knownMaxTermInGroup.get(), parseResult);
 
         if (parseResult == VoteResponse.ParseResult.PASSED) {
+        // 有效票超过半数的情况，切换成 Leader
             logger.info("[{}] [VOTE_RESULT] has been elected to be the leader in term {}", memberState.getSelfId(), term);
             changeRoleToLeader(term);
         }
@@ -591,6 +671,11 @@ public class DLedgerLeaderElector {
         }
     }
 
+    /**
+     * 触发角色状态转换事件，执行扩展点的逻辑代码
+     * @param term
+     * @param role
+     */
     private void handleRoleChange(long term, MemberState.Role role) {
         try {
             takeLeadershipTask.check(term, role);
@@ -598,6 +683,7 @@ public class DLedgerLeaderElector {
             logger.error("takeLeadershipTask.check failed. ter={}, role={}", term, role, t);
         }
 
+        // 执行角色状态转换监听器（扩展点）的逻辑代码
         for (RoleChangeHandler roleChangeHandler : roleChangeHandlers) {
             try {
                 roleChangeHandler.handle(term, role);

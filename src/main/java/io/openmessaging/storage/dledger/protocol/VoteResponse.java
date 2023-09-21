@@ -67,6 +67,9 @@ public class VoteResponse extends RequestOrResponse {
         WAIT_TO_REVOTE,
         REVOTE_IMMEDIATELY,
         PASSED,
+        /**
+         * 等待下一轮投票
+         */
         WAIT_TO_VOTE_NEXT;
     }
 }

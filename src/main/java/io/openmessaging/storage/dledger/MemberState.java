@@ -16,21 +16,23 @@
 
 package io.openmessaging.storage.dledger;
 
-import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
-import io.openmessaging.storage.dledger.utils.IOUtils;
-import io.openmessaging.storage.dledger.utils.PreConditions;
+import static io.openmessaging.storage.dledger.MemberState.Role.CANDIDATE;
+import static io.openmessaging.storage.dledger.MemberState.Role.FOLLOWER;
+import static io.openmessaging.storage.dledger.MemberState.Role.LEADER;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import static io.openmessaging.storage.dledger.MemberState.Role.CANDIDATE;
-import static io.openmessaging.storage.dledger.MemberState.Role.FOLLOWER;
-import static io.openmessaging.storage.dledger.MemberState.Role.LEADER;
+import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
+import io.openmessaging.storage.dledger.utils.IOUtils;
+import io.openmessaging.storage.dledger.utils.PreConditions;
 
 /**
  * Raft 节点状态机
@@ -118,6 +120,10 @@ public class MemberState {
         persistTerm();
     }
 
+    /**
+     * 获取新一轮投票轮次
+     * @return
+     */
     public synchronized long nextTerm() {
         PreConditions.check(role == CANDIDATE, DLedgerResponseCode.ILLEGAL_MEMBER_STATE, "%s != %s", role, CANDIDATE);
         if (knownMaxTermInGroup > currTerm) {
@@ -130,6 +136,10 @@ public class MemberState {
         return currTerm;
     }
 
+    /**
+     * 更新状态机角色，并设置 leaderId 为当前节点 Id
+     * @param term
+     */
     public synchronized void changeToLeader(long term) {
         PreConditions.check(currTerm == term, DLedgerResponseCode.ILLEGAL_MEMBER_STATE, "%d != %d", currTerm, term);
         this.role = LEADER;

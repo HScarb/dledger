@@ -25,7 +25,7 @@ import java.util.concurrent.CompletableFuture;
 public interface DLedgerProtocol extends DLedgerClientProtocol {
 
     /**
-     * 发起投票请求
+     * 发送投票请求（拉票）
      * @param request
      * @return
      * @throws Exception
