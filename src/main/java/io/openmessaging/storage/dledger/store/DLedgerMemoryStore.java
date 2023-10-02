@@ -28,6 +28,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * DLedger 基于内存实现的日志存储实现类
+ */
 public class DLedgerMemoryStore extends DLedgerStore {
 
     private static Logger logger = LoggerFactory.getLogger(DLedgerMemoryStore.class);

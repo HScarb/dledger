@@ -39,6 +39,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * 基于文件内存映射机制的存储实现类
+ */
 public class DLedgerMmapFileStore extends DLedgerStore {
 
     public static final String CHECK_POINT_FILE = "checkpoint";
@@ -50,18 +53,54 @@ public class DLedgerMmapFileStore extends DLedgerStore {
 
     private static Logger logger = LoggerFactory.getLogger(DLedgerMmapFileStore.class);
     public List<AppendHook> appendHooks = new ArrayList<>();
+    /**
+     * 日志的起始序号
+     */
     private long ledgerBeginIndex = -1;
+    /**
+     * 下一条日志下标
+     */
     private long ledgerEndIndex = -1;
+    /**
+     * 已提交的日志序号
+     */
     private long committedIndex = -1;
     private long committedPos = -1;
+    /**
+     * 当前最大的投票轮次
+     */
     private long ledgerEndTerm;
+    /**
+     * DLedger 的配置信息
+     */
     private DLedgerConfig dLedgerConfig;
+    /**
+     * 状态机
+     */
     private MemberState memberState;
+    /**
+     * 日志文件的内存映射队列
+     */
     private MmapFileList dataFileList;
+    /**
+     * 索引文件的内存映射文件集合
+     */
     private MmapFileList indexFileList;
+    /**
+     * 本地线程变量，用来缓存数据索引 ByteBuffer
+     */
     private ThreadLocal<ByteBuffer> localEntryBuffer;
+    /**
+     * 本地线程变量，用来缓存索引 ByteBuffer
+     */
     private ThreadLocal<ByteBuffer> localIndexBuffer;
+    /**
+     * 数据文件刷盘线程
+     */
     private FlushDataService flushDataService;
+    /**
+     * 清楚过期日志文件线程
+     */
     private CleanSpaceService cleanSpaceService;
     private volatile boolean isDiskFull = false;
 
