@@ -183,6 +183,8 @@ public class DLedgerServer implements DLedgerProtocolHandler {
     }
 
     /**
+     * 处理追加条目请求入口
+     *
      * Handle the append requests:
      * 1.append the entry to local store
      * 2.submit the future to entry pusher and wait the quorum ack
@@ -195,12 +197,19 @@ public class DLedgerServer implements DLedgerProtocolHandler {
     @Override
     public CompletableFuture<AppendEntryResponse> handleAppend(AppendEntryRequest request) throws IOException {
         try {
+            // 验证请求合理性
+            // 1. 验证请求目的节点是否为当前节点
             PreConditions.check(memberState.getSelfId().equals(request.getRemoteId()), DLedgerResponseCode.UNKNOWN_MEMBER, "%s != %s", request.getRemoteId(), memberState.getSelfId());
+            // 2. 验证请求集群是否为当前集群
             PreConditions.check(memberState.getGroup().equals(request.getGroup()), DLedgerResponseCode.UNKNOWN_GROUP, "%s != %s", request.getGroup(), memberState.getGroup());
+            // 3. 验证当前节点是否为 Leader
             PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER);
+            // 4. 验证当前节点状态是否为转移中
             PreConditions.check(memberState.getTransferee() == null, DLedgerResponseCode.LEADER_TRANSFERRING);
             long currTerm = memberState.currTerm();
+            // 追加条目是异步过程，会将内容暂存到内存队列中。首先检查内存队列是否已满
             if (dLedgerEntryPusher.isPendingFull(currTerm)) {
+                // 已满，向客户都安返回错误码 LEADER_PENDING_FULL，表示本次追加请求失败
                 AppendEntryResponse appendEntryResponse = new AppendEntryResponse();
                 appendEntryResponse.setGroup(memberState.getGroup());
                 appendEntryResponse.setCode(DLedgerResponseCode.LEADER_PENDING_FULL.getCode());
@@ -208,6 +217,7 @@ public class DLedgerServer implements DLedgerProtocolHandler {
                 appendEntryResponse.setLeaderId(memberState.getSelfId());
                 return AppendFuture.newCompletedFuture(-1, appendEntryResponse);
             } else {
+                // Push 队列未满
                 if (request instanceof BatchAppendEntryRequest) {
                     BatchAppendEntryRequest batchRequest = (BatchAppendEntryRequest) request;
                     if (batchRequest.getBatchMsgs() != null && batchRequest.getBatchMsgs().size() != 0) {
@@ -234,7 +244,9 @@ public class DLedgerServer implements DLedgerProtocolHandler {
                 } else {
                     DLedgerEntry dLedgerEntry = new DLedgerEntry();
                     dLedgerEntry.setBody(request.getBody());
+                    // Leader 节点日志存储
                     DLedgerEntry resEntry = dLedgerStore.appendAsLeader(dLedgerEntry);
+                    // Leader 等待从节点 ACK
                     return dLedgerEntryPusher.waitAck(resEntry, false);
                 }
             }

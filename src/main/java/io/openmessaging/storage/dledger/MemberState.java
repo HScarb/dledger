@@ -55,7 +55,10 @@ public class MemberState {
     private volatile long ledgerEndIndex = -1;
     private volatile long ledgerEndTerm = -1;
     private long knownMaxTermInGroup = -1;
-    private Map<String, String> peerMap = new HashMap<>();
+    /**
+     * 对端节点表
+     */
+    private Map<String /* 对端节点 ID */, String /* 对端节点地址 */> peerMap = new HashMap<>();
     private Map<String, Boolean> peersLiveTable = new ConcurrentHashMap<>();
 
     private volatile String transferee;

@@ -87,7 +87,7 @@ public abstract class DLedgerStore {
     public abstract long getLedgerBeginIndex();
 
     /**
-     * 更新 Leader 节点维护的 ledgerEndIndex 和 ledgerEndTerm
+     * 更新 Leader 节点维护的 ledgerEndIndex（日志序号） 和 ledgerEndTerm（当前投票轮次）
      */
     protected void updateLedgerEndIndexAndTerm() {
         if (getMemberState() != null) {
