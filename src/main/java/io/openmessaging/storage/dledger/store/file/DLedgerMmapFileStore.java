@@ -87,11 +87,11 @@ public class DLedgerMmapFileStore extends DLedgerStore {
      */
     private MmapFileList indexFileList;
     /**
-     * 本地线程变量，用来缓存数据索引 ByteBuffer
+     * 本地线程变量，用来缓存数据 ByteBuffer，大小为 4 MB
      */
     private ThreadLocal<ByteBuffer> localEntryBuffer;
     /**
-     * 本地线程变量，用来缓存索引 ByteBuffer
+     * 本地线程变量，用来缓存索引 ByteBuffer，大小为 64 B（2 个索引条目长度）
      */
     private ThreadLocal<ByteBuffer> localIndexBuffer;
     /**
@@ -371,43 +371,63 @@ public class DLedgerMmapFileStore extends DLedgerStore {
 
     }
 
+    /**
+     * Leader 节点追加条目
+     *
+     * @param entry 日志条目
+     * @return
+     */
     @Override
     public DLedgerEntry appendAsLeader(DLedgerEntry entry) {
+        // 校验
+        // 1. 当前节点是否为 Leader
         PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER);
+        // 2. 当前节点磁盘是否已满，超过 90% 则磁盘满
         PreConditions.check(!isDiskFull, DLedgerResponseCode.DISK_FULL);
+        // 取 ThreadLocal 缓存的 条目和索引 Buffer
         ByteBuffer dataBuffer = localEntryBuffer.get();
         ByteBuffer indexBuffer = localIndexBuffer.get();
+        // 对客户端发送的数据进行编码，按照 DLedger 存储协议进行封装
         DLedgerEntryCoder.encode(entry, dataBuffer);
         int entrySize = dataBuffer.remaining();
+        // 锁定状态机
         synchronized (memberState) {
+            // 再次校验节点状态是否为 Leader
             PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER, null);
             PreConditions.check(memberState.getTransferee() == null, DLedgerResponseCode.LEADER_TRANSFERRING, null);
+            // 设置当前数据条目序号和投票轮次，Raft 回味 Leader 节点收到的每一条数据在服务端维护一个递增的日志序号，作为唯一标识
             long nextIndex = ledgerEndIndex + 1;
             entry.setIndex(nextIndex);
             entry.setTerm(memberState.currTerm());
             entry.setMagic(CURRENT_MAGIC);
             DLedgerEntryCoder.setIndexTerm(dataBuffer, nextIndex, memberState.currTerm(), CURRENT_MAGIC);
+            // 计算消息的起始物理偏移量，并设置
             long prePos = dataFileList.preAppend(dataBuffer.remaining());
             entry.setPos(prePos);
             PreConditions.check(prePos != -1, DLedgerResponseCode.DISK_ERROR, null);
             DLedgerEntryCoder.setPos(dataBuffer, prePos);
+            // 执行追加条目钩子函数
             for (AppendHook writeHook : appendHooks) {
                 writeHook.doHook(entry, dataBuffer.slice(), DLedgerEntry.BODY_OFFSET);
             }
+            // 将数据条目追加到 PageCache 中
             long dataPos = dataFileList.append(dataBuffer.array(), 0, dataBuffer.remaining());
             PreConditions.check(dataPos != -1, DLedgerResponseCode.DISK_ERROR, null);
             PreConditions.check(dataPos == prePos, DLedgerResponseCode.DISK_ERROR, null);
+            // 构建索引，并将索引追加到 PageCache 中
             DLedgerEntryCoder.encodeIndex(dataPos, entrySize, CURRENT_MAGIC, nextIndex, memberState.currTerm(), indexBuffer);
             long indexPos = indexFileList.append(indexBuffer.array(), 0, indexBuffer.remaining(), false);
             PreConditions.check(indexPos == entry.getIndex() * INDEX_UNIT_SIZE, DLedgerResponseCode.DISK_ERROR, null);
             if (logger.isDebugEnabled()) {
                 logger.info("[{}] Append as Leader {} {}", memberState.getSelfId(), entry.getIndex(), entry.getBody().length);
             }
+            // 日志序号 + 1
             ledgerEndIndex++;
             ledgerEndTerm = memberState.currTerm();
             if (ledgerBeginIndex == -1) {
                 ledgerBeginIndex = ledgerEndIndex;
             }
+            // 更新当前节点状态机的日志序号与当前投票轮次
             updateLedgerEndIndexAndTerm();
             return entry;
         }

@@ -111,9 +111,21 @@ public class PushEntryRequest extends RequestOrResponse {
     }
 
     public enum Type {
+        /**
+         * 将日志条目追加到 Follower
+         */
         APPEND,
+        /**
+         * 如果 APPEND 请求少且分散，Leader 将发送一个单独的 COMMIT 请求来通知 Follower 提交索引
+         */
         COMMIT,
+        /**
+         * Leader 变化时，新 Leader 需要与 Follower 日志条目进行比较，截断 Follower 多余的数据
+         */
         COMPARE,
+        /**
+         * Leader 通过索引完成比较后，发现 Follower 存在多余的数据（未提交的），需要发送 TRUNCATE 到 Follower，删除多余的数据，保证数据一致性
+         */
         TRUNCATE
     }
 }

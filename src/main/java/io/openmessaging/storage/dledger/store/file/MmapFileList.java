@@ -189,7 +189,15 @@ public class MmapFileList {
         return preAppend(len, true);
     }
 
+    /**
+     * 根据当前数据条目长度计算该数据物理偏移量
+     *
+     * @param len 需要申请的长度
+     * @param useBlank 是否需要空白填充，默认为 true
+     * @return 起始物理偏移量
+     */
     public long preAppend(int len, boolean useBlank) {
+        // 获取最后一个文件
         MmapFile mappedFile = getLastMappedFile();
         if (null == mappedFile || mappedFile.isFull()) {
             mappedFile = getLastMappedFile(0);
@@ -198,14 +206,19 @@ public class MmapFileList {
             logger.error("Create mapped file for {}", storePath);
             return -1;
         }
+        // 如果当前文件剩余空间不足，则需要创建新的文件
         int blank = useBlank ? MIN_BLANK_LEN : 0;
         if (len + blank > mappedFile.getFileSize() - mappedFile.getWrotePosition()) {
+            // 当前文件剩余空间小于 MIN_BLANK_LEN，表示存储错误，直接返回 -1，需要人工干预
             if (blank < MIN_BLANK_LEN) {
                 logger.error("Blank {} should ge {}", blank, MIN_BLANK_LEN);
                 return -1;
             } else {
+                // 剩余空间大于 MIN_BLANK_LEN，但是不足以容纳当前条目
                 ByteBuffer byteBuffer = ByteBuffer.allocate(mappedFile.getFileSize() - mappedFile.getWrotePosition());
+                // 填充文件结尾魔数
                 byteBuffer.putInt(BLANK_MAGIC_CODE);
+                // 填入文件剩余字节数，表示该文件用完
                 byteBuffer.putInt(mappedFile.getFileSize() - mappedFile.getWrotePosition());
                 if (mappedFile.appendMessage(byteBuffer.array())) {
                     //need to set the wrote position
@@ -221,10 +234,20 @@ public class MmapFileList {
                 }
             }
         }
+        // 当前文件又剩余空间可以容纳条目，返回待写入的物理偏移量
         return mappedFile.getFileFromOffset() + mappedFile.getWrotePosition();
 
     }
 
+    /**
+     * 将数据写入 Page Cache
+     *
+     * @param data
+     * @param pos
+     * @param len
+     * @param useBlank
+     * @return
+     */
     public long append(byte[] data, int pos, int len, boolean useBlank) {
         if (preAppend(len, useBlank) == -1) {
             return -1;

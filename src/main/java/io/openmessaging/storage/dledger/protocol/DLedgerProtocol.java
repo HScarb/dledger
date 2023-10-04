@@ -49,7 +49,7 @@ public interface DLedgerProtocol extends DLedgerClientProtocol {
     CompletableFuture<PullEntriesResponse> pull(PullEntriesRequest request) throws Exception;
 
     /**
-     * 推送日志条目，用于日志传播
+     * 向 Follower 推送日志条目，用于日志传播
      * @param request
      * @return
      * @throws Exception
