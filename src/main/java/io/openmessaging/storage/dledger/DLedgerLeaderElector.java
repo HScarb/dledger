@@ -279,9 +279,12 @@ public class DLedgerLeaderElector {
                 return CompletableFuture.completedFuture(new VoteResponse(request).term(memberState.currTerm()).voteResult(VoteResponse.RESULT.REJECT_UNEXPECTED_LEADER));
             }
 
+            // 根据当前节点的 ledgerEndTerm 进行仲裁
             if (request.getLedgerEndTerm() < memberState.getLedgerEndTerm()) {
+                // 如果发起拉票节点的 ledgerEndTerm 小于当前节点的 ledgerEndTerm，说明发起拉票节点的日志复制进度比当前节点低，无法成为 Leader，拒绝
                 return CompletableFuture.completedFuture(new VoteResponse(request).term(memberState.currTerm()).voteResult(VoteResponse.RESULT.REJECT_EXPIRED_LEDGER_TERM));
             } else if (request.getLedgerEndTerm() == memberState.getLedgerEndTerm() && request.getLedgerEndIndex() < memberState.getLedgerEndIndex()) {
+                // 如果 ledgerEndTerm 相等，但是发起拉票节点的 ledgerEndIndex 小于当前节点的 ledgerEndIndex，说明发起拉票节点的日志复制进度比当前节点低，无法成为 Leader，拒绝
                 return CompletableFuture.completedFuture(new VoteResponse(request).term(memberState.currTerm()).voteResult(VoteResponse.RESULT.REJECT_SMALL_LEDGER_END_INDEX));
             }
 
