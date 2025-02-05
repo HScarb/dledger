@@ -48,6 +48,9 @@ public class DLedgerLeaderElector {
 
     private Random random = new Random();
     private DLedgerConfig dLedgerConfig;
+    /**
+     * 节点状态机，用于保存节点状态
+     */
     private final MemberState memberState;
     /**
      * RPC 服务，向其他节点发送心跳，选举请求等
@@ -336,10 +339,6 @@ public class DLedgerLeaderElector {
 
     /**
      * Leader 节点向 Follower 节点发送心跳包，等待所有节点的心跳响应，然后根据响应的节点数量进行结果仲裁。
-     *
-     * @param term
-     * @param leaderId
-     * @throws Exception
      */
     private void sendHeartbeats(long term, String leaderId) throws Exception {
         // 集群内节点个数
@@ -438,7 +437,7 @@ public class DLedgerLeaderElector {
                 // Follower 有其他 Leader，该 Leader 节点切换成 Candidate
                 changeRoleToCandidate(term);
             } else if (DLedgerUtils.elapsed(lastSuccHeartBeatTime) > maxHeartBeatLeak * heartBeatTimeIntervalMs) {
-                // 超过 maxHeartBeatLeak 个心跳周期（6s）没有收到心跳包，切换成 Candidate
+                // 超过 maxHeartBeatLeak 个心跳周期（6s）没有半数心跳响应成功，切换成 Candidate
                 changeRoleToCandidate(term);
             }
         }
@@ -481,7 +480,7 @@ public class DLedgerLeaderElector {
      * 向其他节点发起投票请求（拉票），等待各个节点响应
      *
      * @param term 当前轮次
-     * @param ledgerEndTerm 最大投票轮次
+     * @param ledgerEndTerm 最新日志的 term
      * @param ledgerEndIndex 最大日志条目 index
      * @return
      * @throws Exception
@@ -541,7 +540,7 @@ public class DLedgerLeaderElector {
      */
     private void maintainAsCandidate() throws Exception {
         //for candidate
-        // 未到下一拉票轮次，直接返回
+        // 未到下一次拉票时间，直接返回
         if (System.currentTimeMillis() < nextTimeToRequestVote && !needIncreaseTermImmediately) {
             return;
         }

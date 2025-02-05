@@ -192,7 +192,7 @@ public class MmapFileList {
     /**
      * 根据当前数据条目长度计算该数据物理偏移量
      *
-     * @param len 需要申请的长度
+     * @param len 需要申请写入的长度
      * @param useBlank 是否需要空白填充，默认为 true
      * @return 起始物理偏移量
      */

@@ -195,6 +195,10 @@ public class DLedgerServer implements DLedgerProtocolHandler {
     /**
      * 处理追加条目请求入口
      *
+     * 1. 将条目追加到本地存储
+     * 2. 将 Future 提交给 EntryPusher 并等待超过半数节点 ACK
+     * 3. 如果待处理请求已满，则立即拒绝
+     *
      * Handle the append requests:
      * 1.append the entry to local store
      * 2.submit the future to entry pusher and wait the quorum ack
@@ -219,7 +223,7 @@ public class DLedgerServer implements DLedgerProtocolHandler {
             long currTerm = memberState.currTerm();
             // 追加条目是异步过程，会将内容暂存到内存队列中。首先检查内存队列是否已满
             if (dLedgerEntryPusher.isPendingFull(currTerm)) {
-                // 已满，向客户都安返回错误码 LEADER_PENDING_FULL，表示本次追加请求失败
+                // 已满，向客户端返回错误码 LEADER_PENDING_FULL，表示本次追加请求失败
                 AppendEntryResponse appendEntryResponse = new AppendEntryResponse();
                 appendEntryResponse.setGroup(memberState.getGroup());
                 appendEntryResponse.setCode(DLedgerResponseCode.LEADER_PENDING_FULL.getCode());
@@ -229,6 +233,7 @@ public class DLedgerServer implements DLedgerProtocolHandler {
             } else {
                 // Push 队列未满
                 if (request instanceof BatchAppendEntryRequest) {
+                    // 批量 Append 请求
                     BatchAppendEntryRequest batchRequest = (BatchAppendEntryRequest) request;
                     if (batchRequest.getBatchMsgs() != null && batchRequest.getBatchMsgs().size() != 0) {
                         // record positions to return;
@@ -252,6 +257,7 @@ public class DLedgerServer implements DLedgerProtocolHandler {
                     throw new DLedgerException(DLedgerResponseCode.REQUEST_WITH_EMPTY_BODYS, "BatchAppendEntryRequest" +
                         " with empty bodys");
                 } else {
+                    // 单个 Append 请求
                     DLedgerEntry dLedgerEntry = new DLedgerEntry();
                     dLedgerEntry.setBody(request.getBody());
                     // Leader 节点日志存储

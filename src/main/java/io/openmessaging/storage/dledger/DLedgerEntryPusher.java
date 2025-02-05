@@ -144,7 +144,7 @@ public class DLedgerEntryPusher {
     }
 
     /**
-     * 检查当前投票轮次的挂起请求 Key 在 Map 中是否存在
+     * 检查当前投票轮次是否已经在挂起请求表中存在，不存在则新建这个投票轮次的挂起请求 Map
      *
      * @param term 投票轮次
      * @param env 调用该方法的函数
@@ -180,10 +180,10 @@ public class DLedgerEntryPusher {
     }
 
     /**
-     * 判断 Push 等待队列是否已满
+     * 判断 Push 等待队列是否已满，单个投票轮次的挂起的 Append 请求数超过 1w 则返回满。
      *
-     * @param currTerm
-     * @return
+     * @param currTerm 投票轮次
+     * @return 等待队列是否已满
      */
     public boolean isPendingFull(long currTerm) {
         // 检查当前投票轮次的挂起请求 Key 在 Map 中是否存在

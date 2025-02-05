@@ -58,7 +58,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
      */
     private long ledgerBeginIndex = -1;
     /**
-     * 下一条日志下标
+     * 当前 Ledger 末尾日志序号
      */
     private long ledgerEndIndex = -1;
     /**
@@ -67,7 +67,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
     private long committedIndex = -1;
     private long committedPos = -1;
     /**
-     * 当前最大的投票轮次
+     * 当前 Ledger 末尾日志的投票轮次
      */
     private long ledgerEndTerm;
     /**
@@ -75,7 +75,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
      */
     private DLedgerConfig dLedgerConfig;
     /**
-     * 状态机
+     * DLedger 节点状态机
      */
     private MemberState memberState;
     /**
@@ -372,7 +372,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
     }
 
     /**
-     * Leader 节点追加条目
+     * Leader 节点追加日志条目
      *
      * @param entry 日志条目
      * @return
@@ -389,22 +389,25 @@ public class DLedgerMmapFileStore extends DLedgerStore {
         ByteBuffer indexBuffer = localIndexBuffer.get();
         // 对客户端发送的数据进行编码，按照 DLedger 存储协议进行封装
         DLedgerEntryCoder.encode(entry, dataBuffer);
+        // 数据缓冲区大小
         int entrySize = dataBuffer.remaining();
         // 锁定状态机
         synchronized (memberState) {
             // 再次校验节点状态是否为 Leader
             PreConditions.check(memberState.isLeader(), DLedgerResponseCode.NOT_LEADER, null);
             PreConditions.check(memberState.getTransferee() == null, DLedgerResponseCode.LEADER_TRANSFERRING, null);
-            // 设置当前数据条目序号和投票轮次，Raft 回味 Leader 节点收到的每一条数据在服务端维护一个递增的日志序号，作为唯一标识
+            // 设置当前日志条目序号和投票轮次，DLedger 会为 Leader 节点收到的每一条数据在服务端维护一个递增的日志序号，作为唯一标识
             long nextIndex = ledgerEndIndex + 1;
             entry.setIndex(nextIndex);
             entry.setTerm(memberState.currTerm());
             entry.setMagic(CURRENT_MAGIC);
+            // 将当前节点的投票轮次和日志序号强制覆盖写入到数据缓冲区中
             DLedgerEntryCoder.setIndexTerm(dataBuffer, nextIndex, memberState.currTerm(), CURRENT_MAGIC);
-            // 计算消息的起始物理偏移量，并设置
+            // 计算消息写入的起始物理偏移量，并设置
             long prePos = dataFileList.preAppend(dataBuffer.remaining());
             entry.setPos(prePos);
             PreConditions.check(prePos != -1, DLedgerResponseCode.DISK_ERROR, null);
+            // 将写入位置覆盖写入到数据缓冲区
             DLedgerEntryCoder.setPos(dataBuffer, prePos);
             // 执行追加条目钩子函数
             for (AppendHook writeHook : appendHooks) {
@@ -414,7 +417,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             long dataPos = dataFileList.append(dataBuffer.array(), 0, dataBuffer.remaining());
             PreConditions.check(dataPos != -1, DLedgerResponseCode.DISK_ERROR, null);
             PreConditions.check(dataPos == prePos, DLedgerResponseCode.DISK_ERROR, null);
-            // 构建索引，并将索引追加到 PageCache 中
+            // 构建索引，写入 indexBuffer，并将索引追加到 PageCache 中
             DLedgerEntryCoder.encodeIndex(dataPos, entrySize, CURRENT_MAGIC, nextIndex, memberState.currTerm(), indexBuffer);
             long indexPos = indexFileList.append(indexBuffer.array(), 0, indexBuffer.remaining(), false);
             PreConditions.check(indexPos == entry.getIndex() * INDEX_UNIT_SIZE, DLedgerResponseCode.DISK_ERROR, null);
