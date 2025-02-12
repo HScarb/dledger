@@ -16,6 +16,26 @@
 
 package io.openmessaging.storage.dledger;
 
+import org.apache.rocketmq.remoting.ChannelEventListener;
+import org.apache.rocketmq.remoting.netty.NettyClientConfig;
+import org.apache.rocketmq.remoting.netty.NettyRemotingClient;
+import org.apache.rocketmq.remoting.netty.NettyRemotingServer;
+import org.apache.rocketmq.remoting.netty.NettyServerConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 import io.openmessaging.storage.dledger.entry.DLedgerEntry;
 import io.openmessaging.storage.dledger.exception.DLedgerException;
 import io.openmessaging.storage.dledger.protocol.AppendEntryRequest;
@@ -44,26 +64,6 @@ import io.openmessaging.storage.dledger.store.DLedgerStore;
 import io.openmessaging.storage.dledger.store.file.DLedgerMmapFileStore;
 import io.openmessaging.storage.dledger.utils.DLedgerUtils;
 import io.openmessaging.storage.dledger.utils.PreConditions;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Optional;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.CompletableFuture;
-
-import org.apache.rocketmq.remoting.ChannelEventListener;
-import org.apache.rocketmq.remoting.netty.NettyClientConfig;
-import org.apache.rocketmq.remoting.netty.NettyRemotingClient;
-import org.apache.rocketmq.remoting.netty.NettyRemotingServer;
-import org.apache.rocketmq.remoting.netty.NettyServerConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * DLedger 节点
@@ -193,7 +193,7 @@ public class DLedgerServer implements DLedgerProtocolHandler {
     }
 
     /**
-     * 处理追加条目请求入口
+     * Leader 处理追加条目请求入口
      *
      * 1. 将条目追加到本地存储
      * 2. 将 Future 提交给 EntryPusher 并等待超过半数节点 ACK
@@ -262,7 +262,7 @@ public class DLedgerServer implements DLedgerProtocolHandler {
                     dLedgerEntry.setBody(request.getBody());
                     // Leader 节点日志存储
                     DLedgerEntry resEntry = dLedgerStore.appendAsLeader(dLedgerEntry);
-                    // Leader 等待从节点 ACK
+                    // 把写入的条目 Push 到所有 Follower，Leader 等待 Follower 节点 ACK
                     return dLedgerEntryPusher.waitAck(resEntry, false);
                 }
             }
@@ -325,6 +325,13 @@ public class DLedgerServer implements DLedgerProtocolHandler {
         return null;
     }
 
+    /**
+     * Follower 收到 Leader 的 push 请求入口
+     *
+     * @param request
+     * @return
+     * @throws Exception
+     */
     @Override
     public CompletableFuture<PushEntryResponse> handlePush(PushEntryRequest request) throws Exception {
         try {

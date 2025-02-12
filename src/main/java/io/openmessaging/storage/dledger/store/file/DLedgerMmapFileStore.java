@@ -16,17 +16,9 @@
 
 package io.openmessaging.storage.dledger.store.file;
 
-import io.openmessaging.storage.dledger.DLedgerConfig;
-import io.openmessaging.storage.dledger.MemberState;
-import io.openmessaging.storage.dledger.ShutdownAbleThread;
-import io.openmessaging.storage.dledger.entry.DLedgerEntry;
-import io.openmessaging.storage.dledger.entry.DLedgerEntryCoder;
-import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
-import io.openmessaging.storage.dledger.store.DLedgerStore;
-import io.openmessaging.storage.dledger.utils.IOUtils;
-import io.openmessaging.storage.dledger.utils.Pair;
-import io.openmessaging.storage.dledger.utils.PreConditions;
-import io.openmessaging.storage.dledger.utils.DLedgerUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -36,8 +28,18 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import io.openmessaging.storage.dledger.DLedgerConfig;
+import io.openmessaging.storage.dledger.MemberState;
+import io.openmessaging.storage.dledger.ShutdownAbleThread;
+import io.openmessaging.storage.dledger.entry.DLedgerEntry;
+import io.openmessaging.storage.dledger.entry.DLedgerEntryCoder;
+import io.openmessaging.storage.dledger.protocol.DLedgerResponseCode;
+import io.openmessaging.storage.dledger.store.DLedgerStore;
+import io.openmessaging.storage.dledger.utils.DLedgerUtils;
+import io.openmessaging.storage.dledger.utils.IOUtils;
+import io.openmessaging.storage.dledger.utils.Pair;
+import io.openmessaging.storage.dledger.utils.PreConditions;
 
 /**
  * 基于文件内存映射机制的存储实现类
@@ -62,7 +64,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
      */
     private long ledgerEndIndex = -1;
     /**
-     * 已提交的日志序号
+     * 已提交的日志序号，即超过半数节点
      */
     private long committedIndex = -1;
     private long committedPos = -1;
@@ -424,13 +426,15 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             if (logger.isDebugEnabled()) {
                 logger.info("[{}] Append as Leader {} {}", memberState.getSelfId(), entry.getIndex(), entry.getBody().length);
             }
-            // 日志序号 + 1
+            // 日志末尾序号 + 1
             ledgerEndIndex++;
+            // 设置日志末尾 term
             ledgerEndTerm = memberState.currTerm();
+            // 如果日志开始序号没有初始化，则初始化
             if (ledgerBeginIndex == -1) {
                 ledgerBeginIndex = ledgerEndIndex;
             }
-            // 更新当前节点状态机的日志序号与当前投票轮次
+            // 更新当前节点 MemberState 的 ledgerEndIndex 与 ledgerEndTerm
             updateLedgerEndIndexAndTerm();
             return entry;
         }

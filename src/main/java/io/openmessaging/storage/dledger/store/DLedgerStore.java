@@ -37,7 +37,7 @@ public abstract class DLedgerStore {
     public abstract DLedgerEntry appendAsLeader(DLedgerEntry entry);
 
     /**
-     * 向 Follower 节点广播日志
+     * 向 Follower 节点追加日志
      *
      * @param entry
      * @param leaderTerm
