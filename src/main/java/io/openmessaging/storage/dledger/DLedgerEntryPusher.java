@@ -68,12 +68,12 @@ public class DLedgerEntryPusher {
     private DLedgerRpcService dLedgerRpcService;
 
     /**
-     * 每个投票轮次中，复制组每个节点当前已存储的最大日志序号（水位）
+     * 每个投票轮次中，复制组中每个节点当前已存储的最大日志序号（水位）
      * 用于判断已提交条目序号，仲裁一个条目是否已被超过半数节点存储
      */
     private Map<Long /* 投票轮次 */, ConcurrentMap<String /* 节点编号 */, Long /* 日志序号 */>> peerWaterMarksByTerm = new ConcurrentHashMap<>();
     /**
-     * 每一个投票轮次中，等待响应挂起的 Append 请求
+     * 每一个投票轮次中，发给 Follower，等待响应挂起的 Append 请求
      */
     private Map<Long /* 投票轮次 */, ConcurrentMap<Long /* 日志序号 */, TimeoutFuture<AppendEntryResponse>>> pendingAppendResponsesByTerm = new ConcurrentHashMap<>();
 
@@ -166,7 +166,7 @@ public class DLedgerEntryPusher {
     }
 
     /**
-     * Leader 更新 Peer 水位线
+     * Leader 更新 Peer 水位线，即对端节点已经保存的最大日志序号
      *
      * @param term
      * @param peerId
@@ -360,6 +360,8 @@ public class DLedgerEntryPusher {
 
         /**
          * 追加日志仲裁主逻辑循环
+         * 不断根据当前 term 复制组中所有节点已保存的日志水位 {@link #peerWaterMarksByTerm} 来进行仲裁，
+         * 根据仲裁成功的日志 index，把对应的 APPEND 请求返回客户端
          */
         @Override
         public void doWork() {
@@ -376,7 +378,7 @@ public class DLedgerEntryPusher {
                     }
                     lastPrintWatermarkTimeMs = System.currentTimeMillis();
                 }
-                // 不是 Leader 直接返回
+                // 不是 Leader，等 1ms（防止 CPU 空转），返回
                 if (!memberState.isLeader()) {
                     waitForRunning(1);
                     return;
@@ -384,13 +386,13 @@ public class DLedgerEntryPusher {
                 long currTerm = memberState.currTerm();
                 checkTermForPendingMap(currTerm, "QuorumAckChecker");
                 checkTermForWaterMark(currTerm, "QuorumAckChecker");
-                // 清除过期请求
+                // 清除过期的（term 与当前不同）被挂起的 APPEND 请求
                 if (pendingAppendResponsesByTerm.size() > 1) {
                     for (Long term : pendingAppendResponsesByTerm.keySet()) {
                         if (term == currTerm) {
                             continue;
                         }
-                        // 清除投票轮次与当前轮次不同的挂起请求，向客户端返回错误码 TERM_CHANGED
+                        // 清除 term 与当前不同的挂起请求，向客户端返回错误码 TERM_CHANGED
                         for (Map.Entry<Long, TimeoutFuture<AppendEntryResponse>> futureEntry : pendingAppendResponsesByTerm.get(term).entrySet()) {
                             AppendEntryResponse response = new AppendEntryResponse();
                             response.setGroup(memberState.getGroup());
@@ -403,7 +405,7 @@ public class DLedgerEntryPusher {
                         pendingAppendResponsesByTerm.remove(term);
                     }
                 }
-                // 清除已过期的日志复制水位线，即投票 term 与当前 term 不同的水位线
+                // 清除已过期的节点日志保存水位线，即投票 term 与当前 term 不同的水位线
                 if (peerWaterMarksByTerm.size() > 1) {
                     for (Long term : peerWaterMarksByTerm.keySet()) {
                         if (term == currTerm) {
@@ -416,14 +418,14 @@ public class DLedgerEntryPusher {
                 }
 
                 // 追加日志仲裁
-                // 获取当前投票轮次已经存储的日志表
+                // 获取当前 term 节点已经保存的日志表
                 Map<String /* 节点编号 */, Long /*日志序号*/> peerWaterMarks = peerWaterMarksByTerm.get(currTerm);
-                // 按日志序号降序排序
+                // 按已经保存的日志序号大小降序排序
                 List<Long> sortedWaterMarks = peerWaterMarks.values()
                     .stream()
                     .sorted(Comparator.reverseOrder())
                     .collect(Collectors.toList());
-                // 获取日志表中间的日志序号，即为完成仲裁的日志序号
+                // 获取日志表中间的日志序号，即为完成仲裁的日志序号（超过半数大于它）
                 long quorumIndex = sortedWaterMarks.get(sortedWaterMarks.size() / 2);
                 final Optional<StateMachineCaller> fsmCaller = DLedgerEntryPusher.this.fsmCaller;
                 if (fsmCaller.isPresent()) {
@@ -443,13 +445,13 @@ public class DLedgerEntryPusher {
                         waitForRunning(1);
                     }
                 } else {
-                    // 更新 committedIndex 索引，方便 DLedgerStore 定时将 committedIndex 写入 checkPoint
+                    // 更新 committedIndex 索引（已提交的日志序号），方便 DLedgerStore 定时将 committedIndex 写入 checkPoint
                     dLedgerStore.updateCommittedIndex(currTerm, quorumIndex);
-                    // 处理 quorumIndex（已提交指针）之前的挂起的客户端追加日志请求，返回成功
+                    // 处理 quorumIndex（已提交指针）之前的挂起等待 handleAppend 的 future 完成的 Dledger 客户端追加日志请求，返回成功
                     ConcurrentMap<Long, TimeoutFuture<AppendEntryResponse>> responses = pendingAppendResponsesByTerm.get(currTerm);
                     boolean needCheck = false;
                     int ackNum = 0;
-                    // 从 quorumIndex 开始倒序遍历
+                    // 从 quorumIndex （已提交指针）开始倒序遍历
                     for (Long i = quorumIndex; i > lastQuorumIndex; i--) {
                         try {
                             // 移除对应的挂起请求
@@ -478,7 +480,7 @@ public class DLedgerEntryPusher {
                     }
 
                     // 如果本次仲裁没有日志被成功追加，检查被挂起的追加请求
-                    // 判断其大于 quorumIndex 的日志序号是否超时，如果超时，向客户端返回 WAIT_QUORUM_ACK_TIMEOUT
+                    // 判断其大于 quorumIndex 日志序号的 APPEND 请求是否超时，如果超时，向客户端返回 WAIT_QUORUM_ACK_TIMEOUT
                     if (ackNum == 0) {
                         checkResponseFuturesTimeout(quorumIndex + 1);
                         waitForRunning(1);
@@ -487,10 +489,12 @@ public class DLedgerEntryPusher {
                     if (DLedgerUtils.elapsed(lastCheckLeakTimeMs) > 1000 || needCheck) {
                         // 检查挂起的日志追加请求是否泄漏
                         updatePeerWaterMark(currTerm, memberState.getSelfId(), dLedgerStore.getLedgerEndIndex());
+                        // 遍历已挂起的请求，如果日志序号已经仲裁成功，则向客户端返回成功
                         checkResponseFuturesElapsed(quorumIndex);
                         lastCheckLeakTimeMs = System.currentTimeMillis();
                     }
                 }
+                // 更新上次仲裁成功的日志序号
                 lastQuorumIndex = quorumIndex;
             } catch (Throwable t) {
                 DLedgerEntryPusher.logger.error("Error in {}", getName(), t);
@@ -681,7 +685,7 @@ public class DLedgerEntryPusher {
                         case SUCCESS:
                             // 移除 APPEND 请求等待列表中的日志条目
                             pendingMap.remove(x.getIndex());
-                            // 更新 Peer（对端节点）水位线（追加成功的日志序号）
+                            // APPEND 成功后更新 Peer（对端节点）水位线（追加成功的日志序号）
                             updatePeerWaterMark(x.getTerm(), peerId, x.getIndex());
                             // 唤醒 ACK 仲裁线程，用于仲裁 APPEND 结果
                             quorumAckChecker.wakeup();
