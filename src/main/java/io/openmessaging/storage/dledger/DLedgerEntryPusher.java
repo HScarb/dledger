@@ -730,6 +730,7 @@ public class DLedgerEntryPusher {
         }
 
         private void doCommit() throws Exception {
+            // 仅在距离上次发送至少过了1秒后才发送COMMIT请求
             if (DLedgerUtils.elapsed(lastPushCommitTimeMs) > 1000) {
                 PushEntryRequest request = buildPushRequest(null, PushEntryRequest.Type.COMMIT);
                 //Ignore the results
@@ -772,12 +773,14 @@ public class DLedgerEntryPusher {
                 if (type.get() != PushEntryRequest.Type.APPEND) {
                     break;
                 }
-                // 如果准备 APPEND 的日志超过了当前 Leader 的最大日志序号
+                // 如果准备 APPEND 的日志超过了当前 Leader 的最大日志序号，一般是已经 push 完最后一条消息，还没有新消息需要同步的场景
+                // 此时每秒都向 follower 同步一次 commitIndex，因为 commitIndex 可能会随着某些条目在多数节点复制完成后推进
                 if (writeIndex > dLedgerStore.getLedgerEndIndex()) {
                     // 单独发送 COMMIT 请求
                     doCommit();
-                    // 检查最老的日志 APPEND 的请求是否超时，如果超时，重新发送 APPEND 请求，跳出
+                    // 检查最老的日志 APPEND 的请求是否超时，如果超时，重新发送 APPEND 请求
                     doCheckAppendResponse();
+                    // 没有新的日志条目需要推送，跳出
                     break;
                 }
                 // 检查挂起的 APPEND 请求数量是否超过阈值（1000）
@@ -1301,7 +1304,7 @@ public class DLedgerEntryPusher {
                 logger.info("[HandleDoTruncate] truncateIndex={} pos={}", truncateIndex, request.getEntry().getPos());
                 PreConditions.check(truncateIndex == request.getEntry().getIndex(), DLedgerResponseCode.UNKNOWN);
                 PreConditions.check(request.getType() == PushEntryRequest.Type.TRUNCATE, DLedgerResponseCode.UNKNOWN);
-                // 删除节点上 truncateIndex 之后的所有日志
+                // 删除节点上 truncateIndex 之后的所有日志文件，包含 truncateIndex 的文件会修改读写指针
                 long index = dLedgerStore.truncate(request.getEntry(), request.getTerm(), request.getLeaderId());
                 PreConditions.check(index == truncateIndex, DLedgerResponseCode.INCONSISTENT_STATE);
                 future.complete(buildResponse(request, DLedgerResponseCode.SUCCESS.getCode()));
@@ -1331,12 +1334,21 @@ public class DLedgerEntryPusher {
         }
 
         /**
+         * 遍历所有挂起的 APPEND 请求进行检查
+         * 1. 待 APPEND 的 index 小于 Follower 存储的最大日志序号：
+         *   * 内容一致返回 SUCCESS，不一致 INCONSISTENT_STATE
+         *   * 这种情况在 Leader 重复推送消息时出现
+         * 2. 待 APPEND 的 index 等于 Follower 存储的最大日志序号：正常，直接返回
+         * 3. 待 APPEND 的 index 大于 Follower 存储的最大日志序号：
+         *   * 请求已超时则返回 INCONSISTENT_STATE，触发 Leader 发送 COMPARE 请求
+         *   * 这种情况在 Follower 宕机重启后，其 ledgerEndIndex 可能比之前小。Leader 推送条目的序号可能超前于当前 Follower 的最大日志序号
          * @param endIndex Follower 存储的最大日志序号
          */
         private void checkAppendFuture(long endIndex) {
             long minFastForwardIndex = Long.MAX_VALUE;
             // 遍历所有挂起的 APPEND 请求
             for (Pair<PushEntryRequest, CompletableFuture<PushEntryResponse>> pair : writeRequestMap.values()) {
+                // Batch append 的头尾 index
                 long firstEntryIndex = pair.getKey().getFirstEntryIndex();
                 long lastEntryIndex = pair.getKey().getLastEntryIndex();
                 // 待追加日志序号小于等于 Follower 存储的最大日志序号
@@ -1391,10 +1403,12 @@ public class DLedgerEntryPusher {
             pair.getValue().complete(buildResponse(pair.getKey(), DLedgerResponseCode.INCONSISTENT_STATE.getCode()));
         }
         /**
-         * 异常检测，Follower 从 writeRequestMap 中查找最大日志序号 + 1 的日志序号对应的请求，如果不存在，可能发生推送丢失
          * The leader does push entries to follower, and record the pushed index. But in the following conditions, the push may get stopped.
          *   * If the follower is abnormally shutdown, its ledger end index may be smaller than before. At this time, the leader may push fast-forward entries, and retry all the time.
          *   * If the last ack is missed, and no new message is coming in.The leader may retry push the last message, but the follower will ignore it.
+         * Leader 确实会向 Follower 推送条目并记录已推送的索引。但在以下情况下，推送过程可能会停止：
+         *   * 如果 Follower 异常关闭，它的 ledgerEndIndex 可能会比之前更小（丢失提交的日志）。此时，Leader 可能会推送 index 超前的条目，并不断重试。
+         *   * 如果 Follower 最后的（ack）丢失，且没有新消息写入，Leader 可能会重试推送最后一条消息，但 Follower 会忽略它。
          * @param endIndex Follower 存储的最大日志序号
          */
         private void checkAbnormalFuture(long endIndex) {

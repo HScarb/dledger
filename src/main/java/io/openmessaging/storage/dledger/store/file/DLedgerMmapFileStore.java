@@ -411,7 +411,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             PreConditions.check(prePos != -1, DLedgerResponseCode.DISK_ERROR, null);
             // 将写入位置覆盖写入到数据缓冲区
             DLedgerEntryCoder.setPos(dataBuffer, prePos);
-            // 执行追加条目钩子函数
+            // 执行追加条目钩子函数，在 RocketMQ 中，这里会重新计算消息数据的偏移量并覆盖写入 buffer
             for (AppendHook writeHook : appendHooks) {
                 writeHook.doHook(entry, dataBuffer.slice(), DLedgerEntry.BODY_OFFSET);
             }
@@ -440,6 +440,9 @@ public class DLedgerMmapFileStore extends DLedgerStore {
         }
     }
 
+    /**
+     * 删除节点上 truncateIndex 之后的所有日志文件，包含 truncateIndex 的文件会修改读写指针
+     */
     @Override
     public long truncate(DLedgerEntry entry, long leaderTerm, String leaderId) {
         PreConditions.check(memberState.isFollower(), DLedgerResponseCode.NOT_FOLLOWER, null);
@@ -451,6 +454,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             PreConditions.check(memberState.isFollower(), DLedgerResponseCode.NOT_FOLLOWER, "role=%s", memberState.getRole());
             PreConditions.check(leaderTerm == memberState.currTerm(), DLedgerResponseCode.INCONSISTENT_TERM, "term %d != %d", leaderTerm, memberState.currTerm());
             PreConditions.check(leaderId.equals(memberState.getLeaderId()), DLedgerResponseCode.INCONSISTENT_LEADER, "leaderId %s != %s", leaderId, memberState.getLeaderId());
+            // 检查 Entry 对应的相同内容是否已经存在
             boolean existedEntry;
             try {
                 DLedgerEntry tmp = get(entry.getIndex());
@@ -458,31 +462,38 @@ public class DLedgerMmapFileStore extends DLedgerStore {
             } catch (Throwable ignored) {
                 existedEntry = false;
             }
+            // 如果存在，则从它之后开始截断，如果不存在，则从 index 对应的 entry 开始截断
             long truncatePos = existedEntry ? entry.getPos() + entry.getSize() : entry.getPos();
             if (truncatePos != dataFileList.getMaxWrotePosition()) {
                 logger.warn("[TRUNCATE]leaderId={} index={} truncatePos={} != maxPos={}, this is usually happened on the old leader", leaderId, entry.getIndex(), truncatePos, dataFileList.getMaxWrotePosition());
             }
+            // 截断数据文件，对于部分截断的文件调整内部指针，对于截断点之后的文件则删除
             dataFileList.truncateOffset(truncatePos);
             if (dataFileList.getMaxWrotePosition() != truncatePos) {
+                //
                 logger.warn("[TRUNCATE] rebuild for data wrotePos: {} != truncatePos: {}", dataFileList.getMaxWrotePosition(), truncatePos);
                 PreConditions.check(dataFileList.rebuildWithPos(truncatePos), DLedgerResponseCode.DISK_ERROR, "rebuild data truncatePos=%d", truncatePos);
             }
+            // 修正数据文件的 flush 位置
             reviseDataFileListFlushedWhere(truncatePos);
             if (!existedEntry) {
                 long dataPos = dataFileList.append(dataBuffer.array(), 0, dataBuffer.remaining());
                 PreConditions.check(dataPos == entry.getPos(), DLedgerResponseCode.DISK_ERROR, " %d != %d", dataPos, entry.getPos());
             }
 
+            // 截断索引文件到对应 entry.index 位置
             long truncateIndexOffset = entry.getIndex() * INDEX_UNIT_SIZE;
             indexFileList.truncateOffset(truncateIndexOffset);
             if (indexFileList.getMaxWrotePosition() != truncateIndexOffset) {
                 logger.warn("[TRUNCATE] rebuild for index wrotePos: {} != truncatePos: {}", indexFileList.getMaxWrotePosition(), truncateIndexOffset);
                 PreConditions.check(indexFileList.rebuildWithPos(truncateIndexOffset), DLedgerResponseCode.DISK_ERROR, "rebuild index truncatePos=%d", truncateIndexOffset);
             }
+            // 修正索引文件的 flush 位置
             reviseIndexFileListFlushedWhere(truncateIndexOffset);
             DLedgerEntryCoder.encodeIndex(entry.getPos(), entrySize, entry.getMagic(), entry.getIndex(), entry.getTerm(), indexBuffer);
             long indexPos = indexFileList.append(indexBuffer.array(), 0, indexBuffer.remaining(), false);
             PreConditions.check(indexPos == entry.getIndex() * INDEX_UNIT_SIZE, DLedgerResponseCode.DISK_ERROR, null);
+            // 更新 ledger end 信息
             ledgerEndTerm = entry.getTerm();
             ledgerEndIndex = entry.getIndex();
             reviseLedgerBeginIndex();
@@ -725,6 +736,7 @@ public class DLedgerMmapFileStore extends DLedgerStore {
                     logger.info("Flush data cost={} ms", elapsed);
                 }
 
+                // 每 3 秒持久化一次 checkpoint
                 if (DLedgerUtils.elapsed(lastCheckPointTimeMs) > dLedgerConfig.getCheckPointInterval()) {
                     persistCheckPoint();
                     lastCheckPointTimeMs = System.currentTimeMillis();
