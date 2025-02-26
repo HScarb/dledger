@@ -35,7 +35,7 @@ import io.openmessaging.storage.dledger.utils.IOUtils;
 import io.openmessaging.storage.dledger.utils.PreConditions;
 
 /**
- * Raft 节点状态机
+ * Raft 节点状态机，保存当前节点角色、id、term、对端节点等信息
  */
 public class MemberState {
 
